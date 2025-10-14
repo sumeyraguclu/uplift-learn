@@ -1,0 +1,12 @@
+# Tüm veri dosyalarını ignore et
+*.parquet
+*.csv
+*.csv.gz
+*.xlsx
+*.json
+
+# Ama .gitkeep'i tut
+!.gitkeep
+
+# Ama README varsa tut
+!README.md
