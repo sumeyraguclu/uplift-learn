@@ -1,53 +1,15 @@
-# ============================================
-# UPLIFT-LEARN REQUIREMENTS
-# Python 3.11+ için bağımlılıklar
-# ============================================
-
-# -------------------- Core Data Science --------------------
 numpy==1.26.2
 pandas==2.1.4
 scipy==1.11.4
-
-# -------------------- Machine Learning --------------------
 scikit-learn==1.3.2
 xgboost==2.0.3
-
-# -------------------- Uplift Modeling --------------------
 scikit-uplift==0.5.1
-
-# -------------------- Visualization --------------------
 matplotlib==3.8.2
 seaborn==0.13.0
 plotly==5.18.0
-
-# -------------------- Jupyter --------------------
 jupyter==1.0.0
 ipykernel==6.27.1
 notebook==7.0.6
 ipywidgets==8.1.1
-
-# -------------------- Utilities --------------------
 tqdm==4.66.1
 python-dotenv==1.0.0
-
-# -------------------- Optimization (Gün 4'te kullanacağız) --------------------
-# ortools==9.8.3296
-# Şimdilik yorum satırı - Gün 4'te açacağız
-
-# -------------------- Development (Opsiyonel) --------------------
-# pytest==7.4.3
-# pytest-cov==4.1.0
-# black==23.12.1
-# ruff==0.1.9
-# mypy==1.7.1
-
-# ============================================
-# KURULUM:
-# pip install -r requirements.txt
-# ============================================
-
-# NOTLAR:
-# - Python 3.11+ gerekli
-# - Virtual environment kullanın
-# - Windows: venv\Scripts\activate.bat
-# - Linux/Mac: source venv/bin/activate

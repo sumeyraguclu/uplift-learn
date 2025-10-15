@@ -426,7 +426,7 @@ Eğer bu projeyi bir makalede kullanacaksan:
   title={Uplift-Learn: A Hands-on Learning Project for Uplift Modeling},
   author={[Your Name]},
   year={2025},
-  howpublished={\url{https://github.com/[username]/uplift-learn}},
+  howpublished={\url{https://github.com/sumeyraguclu/uplift-learn}},
   note={Educational implementation of T-Learner and optimization methods}
 }
 ```
