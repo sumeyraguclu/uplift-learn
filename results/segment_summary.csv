@@ -1,0 +1,6 @@
+uplift_segment,n_customers,avg_cate,std_cate,baseline_conversion,avg_monetary,expected_uplift_pct
+Very Low,12,-0.4197,0.0644,0.4167,156110.51,-41.97
+Low,685,-0.1557,0.0372,0.4715,167942.8619,-15.57
+Medium,179922,0.0222,0.0343,0.634,87181.4111,2.22
+High,19288,0.1261,0.0361,0.4952,47205.1394,12.61
+Very High,132,0.3446,0.0419,0.4091,50007.0697,34.46

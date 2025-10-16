@@ -1,0 +1,13 @@
+======================================================================
+X5 RETAILHERO - UPLIFT MODEL COMPARISON REPORT
+======================================================================
+
+    Model  Qini AUC  Uplift@10  Uplift@20  Mean Uplift  Std Uplift
+T-Learner  0.068943   0.051349   0.044065     0.031815    0.065771
+S-Learner  0.083012   0.071000   0.057073     0.029820    0.024944
+X-Learner  0.079102   0.065210   0.053646     0.031345    0.029168
+R-Learner  0.077158   0.073533   0.049361     0.007908    0.017241
+
+Best Model: S-Learner (Qini AUC: 0.0830)
+Worst Model: T-Learner (Qini AUC: 0.0689)
+Improvement: 20.4%
