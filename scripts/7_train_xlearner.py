@@ -99,30 +99,26 @@ def main():
     y = df['target'].copy()
     treatment = df['treatment'].copy()
     
-    X_train, X_test, y_train, y_test, treatment_train, treatment_test = train_test_split(
-        X, y, treatment, test_size=0.2, stratify=treatment, random_state=42
-    )
-    
+    # Tüm veri ile eğit (T-Learner gibi)
     scaler = StandardScaler()
-    X_train_scaled = scaler.fit_transform(X_train)
-    X_test_scaled = scaler.transform(X_test)
+    X_scaled = scaler.fit_transform(X)
     
-    print(f"Train: {len(X_train):,} | Test: {len(X_test):,}")
+    print(f"Total samples: {len(X):,}")
     print(f"Features: {len(feature_cols)}")
     
-    print("\nTraining X-Learner...")
+    print("\nTraining X-Learner on full dataset...")
     model = XLearner()
-    model.fit(X_train_scaled, y_train.values, treatment_train.values)
+    model.fit(X_scaled, y.values, treatment.values)
     print("✓ Model trained")
     
-    print("\nEvaluating...")
-    uplift = model.predict(X_test_scaled)
-    qini = qini_auc_normalized(y_test.values, uplift, treatment_test.values)
+    print("\nEvaluating on full dataset...")
+    uplift = model.predict(X_scaled)
+    qini = qini_auc_normalized(y.values, uplift, treatment.values)
     
     sorted_idx = np.argsort(uplift)[::-1]
-    y_sorted = y_test.values[sorted_idx]
-    t_sorted = treatment_test.values[sorted_idx]
-    n = len(y_test)
+    y_sorted = y.values[sorted_idx]
+    t_sorted = treatment.values[sorted_idx]
+    n = len(y)
     
     def calc_uplift_at(pct):
         idx = slice(0, max(1, int(n * pct / 100)))
@@ -160,8 +156,7 @@ def main():
         'metadata': {
             'model_name': 'X-Learner',
             'created_at': datetime.now().isoformat(),
-            'train_size': len(X_train),
-            'test_size': len(X_test),
+            'total_size': len(X),
             'n_features': len(feature_cols)
         }
     }
@@ -170,6 +165,30 @@ def main():
         pickle.dump(results, f)
     
     print(f"✓ Saved: {output_path}")
+    
+    # Create predictions CSV
+    print("\nCreating predictions CSV...")
+    
+    # X-Learner için p_control ve p_treatment hesapla
+    # X-Learner'da: uplift = p_treatment - p_control
+    # Varsayım: p_control = baseline, p_treatment = baseline + uplift
+    baseline = y.mean()  # Baseline conversion rate
+    p_control = np.full(len(uplift), baseline)  # Sabit baseline
+    p_treatment = p_control + uplift  # Baseline + uplift
+    
+    # Tüm veri client_id'lerini kullan
+    all_client_ids = df['client_id'].values
+    
+    predictions_df = pd.DataFrame({
+        'client_id': all_client_ids,
+        'p_control': p_control,
+        'p_treatment': p_treatment,
+        'cate': uplift,
+        'cate_pct': uplift * 100
+    })
+    predictions_df.to_csv('results/xlearner_predictions.csv', index=False)
+    print("✓ Saved: results/xlearner_predictions.csv")
+    
     print("\n" + "="*70)
     print("COMPLETE!")
     print("="*70)

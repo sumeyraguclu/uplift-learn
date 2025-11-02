@@ -1,0 +1,2 @@
+date,scenario,strategy,n_treatment,n_control,cost,roi,roas,profit
+2025-10-16T21:47:08.231229,Balanced,top_1pct,1000,1000,71.9,10266.727883939539,103.6672788393954,7381.7773485525295

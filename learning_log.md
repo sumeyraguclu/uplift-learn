@@ -36,23 +36,7 @@
 - **Covariate Balance**: Gruplar arasında özellik dağılımı benzer mi?
 - T-test ile kontrol: p-value > 0.05 ise dengeli
 
-### 📈 Veri Özeti
-```
-Toplam Satır: ______
-Toplam Sütun: ______
-Feature Sayısı: 12 (f0-f11)
 
-Treatment Dağılımı:
-- Control (T=0): _____% 
-- Treatment (T=1): _____%
-
-Dönüşüm Oranları:
-- Genel: _____%
-- Control: _____%
-- Treatment: _____%
-- ATE: +_____%
-
-Covariate Balance: _____/6 özellik dengeli
 ```
 
 ### 🤔 Kafama Takılan Sorular
@@ -88,77 +72,7 @@ Covariate Balance: _____/6 özellik dengeli
 - [ ] Video: Causal ML Crash Course (15 dk)
 - [ ] scikit-uplift repo incelemesi
 
-### 🎯 Yarın Hedeflerim (Gün 2)
-- [ ] T-Learner sınıfını sıfırdan kodlamak
-- [ ] XGBoost ile model eğitmek
-- [ ] İlk uplift tahminlerini yapmak
-- [ ] Uplift dağılımını görselleştirmek
-- [ ] scikit-uplift ile karşılaştırmak
+
 
 ---
 
-## 🗓️ Gün 2: T-Learner İmplementasyonu (Tarih: ______)
-
-### ✅ Tamamlanan Görevler
-- [ ] ...
-
-### 📊 Öğrendiğim Kavramlar
-- [ ] ...
-
-### 🤔 Kafama Takılan Sorular
-1. ...
-
-### 🎯 Yarın Hedeflerim (Gün 3)
-- [ ] ...
-
----
-
-## 🗓️ Gün 3: Metrik Değerlendirme (Tarih: ______)
-
-(Daha sonra doldurulacak)
-
----
-
-## 🗓️ Gün 4: Optimizasyon (Tarih: ______)
-
-(Daha sonra doldurulacak)
-
----
-
-## 🗓️ Gün 5: Pipeline (Tarih: ______)
-
-(Daha sonra doldurulacak)
-
----
-
-## 📊 Genel İstatistikler
-
-**Toplam Öğrenme Günü**: 1/7  
-**Tamamlanan Notebook**: 1/5  
-**GitHub Commit**: 1  
-**Kod Satırı**: ~0 (henüz sadece veri analizi)
-
----
-
-## 🎓 Önemli Notlar
-
-### Formüller
-```
-Uplift = P(Y=1|T=1,X) - P(Y=1|T=0,X)
-
-ATE = E[Y|T=1] - E[Y|T=0]
-
-Qini(k) = (sonra eklenecek)
-```
-
-### Python Snippet'leri
-```python
-# Uplift hesaplama (T-Learner)
-p1 = model_treatment.predict_proba(X)[:, 1]
-p0 = model_control.predict_proba(X)[:, 1]
-uplift = p1 - p0
-```
-
----
-
-**Son Güncelleme**: ______

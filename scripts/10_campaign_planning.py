@@ -1,13 +1,8 @@
 """
-X5 RetailHero - Campaign Planning & ROI Modeling
-Actionable targeting strategy based on uplift model
+X5 RetailHero - Campaign Planning (Refactored)
+Uses centralized src.optimize module
 
-Steps:
-1. Segment customers by CATE (uplift potential)
-2. Calculate expected conversions per segment
-3. Estimate ROI by budget allocation
-4. Plan A/B test sample sizes
-5. Generate targeting recommendations
+Strategy comparison and ROI/Budget constrained targeting
 """
 
 import pandas as pd
@@ -15,242 +10,575 @@ import numpy as np
 import pickle
 from pathlib import Path
 from datetime import datetime
+from scipy import stats
 import warnings
+
+# Import from src modules
+from src.optimize import (
+    greedy_optimizer,
+    roi_threshold_optimizer,
+    top_k_optimizer,
+    compare_strategies,
+    calculate_campaign_metrics,
+    optimize_with_constraints,  # kısıtlı optimizasyon
+)
+from src.config import get_config
 
 warnings.filterwarnings('ignore')
 
-Path('results').mkdir(exist_ok=True)
+# ---------------------------------------------------------------------
+# Config & Dirs
+# ---------------------------------------------------------------------
+config = get_config()
+config.ensure_dirs()
 Path('logs').mkdir(exist_ok=True)
 
-def log_msg(msg, log_file='logs/03_campaign_planning.log'):
+def log_msg(msg, log_file='logs/10_campaign_planning.log'):
     print(msg)
     with open(log_file, 'a', encoding='utf-8') as f:
         f.write(msg + '\n')
 
 # Initialize log
-with open('logs/03_campaign_planning.log', 'w') as f:
-    f.write(f"Campaign Planning Report\nStarted: {datetime.now()}\n\n")
+with open('logs/10_campaign_planning.log', 'w', encoding='utf-8') as f:
+    f.write(f"Campaign Planning (Refactored)\nStarted: {datetime.now()}\n\n")
 
-# ======================== LOAD DATA ========================
-
+# ---------------------------------------------------------------------
+# LOAD DATA
+# ---------------------------------------------------------------------
 log_msg("=" * 70)
-log_msg("CAMPAIGN PLANNING & ROI MODELING")
+log_msg("CAMPAIGN PLANNING & ROI OPTIMIZATION")
 log_msg("=" * 70)
+log_msg("Using src.optimize module")
+log_msg(f"Config: margin=${config.campaign.margin}, budget=${config.campaign.budget:,.0f}, "
+        f"contact_cost=${config.campaign.contact_cost:.2f}, "
+        f"min_roi={getattr(config.campaign, 'min_roi', 0.5):.2f}")
 
 log_msg("\nLoading data...")
-pred_df = pd.read_csv('results/tlearner_predictions.csv')
 
-with open('data/x5_rfm_processed.pkl', 'rb') as f:
+# Tercihen config.paths.calibrated_predictions, yoksa results/final_cate.csv
+pred_path = getattr(getattr(config, 'paths', object()), 'calibrated_predictions', None)
+if pred_path is None:
+    pred_path = 'results/final_cate.csv'
+pred_df = pd.read_csv(pred_path)
+
+# --- Tek ve nihai 'cate' kolonunu garanti et ---
+if 'cate_calibrated' in pred_df.columns:
+    keep_cols = ['client_id', 'cate_calibrated'] + [c for c in ['p_control', 'p_treatment'] if c in pred_df.columns]
+    pred_df = pred_df[keep_cols].copy()
+    pred_df = pred_df.rename(columns={'cate_calibrated': 'cate'})
+elif 'cate' in pred_df.columns:
+    keep_cols = ['client_id', 'cate'] + [c for c in ['p_control', 'p_treatment'] if c in pred_df.columns]
+    pred_df = pred_df[keep_cols].copy()
+else:
+    raise ValueError(f"{pred_path} dosyasında 'cate_calibrated' veya 'cate' kolonu bulunmalı.")
+
+# RFM & ana veri
+with open(config.paths.rfm_data, 'rb') as f:
     data = pickle.load(f)
 df = data['data']
 
 # Merge
-campaign = df[['client_id', 'treatment', 'target', 'rfm_segment', 'monetary_capped']].merge(
-    pred_df, on='client_id'
-)
+campaign = df[[
+    'client_id', 'treatment', 'target',
+    'rfm_segment', 'r_score', 'f_score', 'm_score', 'rfm_score',
+    'monetary_capped', 'recency', 'frequency', 'aov'
+]].merge(pred_df, on='client_id', how='inner')
+
+# Yinelenen kolon adlarını temizle (sonuncuyu tut)
+campaign = campaign.loc[:, ~campaign.columns.duplicated(keep='last')]
+
+# Emniyet: tek 'cate' kolonu
+cate_cols = [c for c in campaign.columns if c == 'cate']
+assert len(cate_cols) == 1, f"Beklenmedik cate kolon sayısı: {cate_cols}"
+campaign['cate'] = pd.to_numeric(campaign['cate'], errors='coerce')
+
+if 'rfm_segment' not in campaign.columns:
+    campaign['rfm_segment'] = 'UNKNOWN'
 
 log_msg(f"Total customers: {len(campaign):,}")
 
-# ======================== SEGMENT CUSTOMERS ========================
-
+# ---------------------------------------------------------------------
+# STRATEGY COMPARISON (sadece karar desteği)
+# ---------------------------------------------------------------------
 log_msg("\n" + "=" * 70)
-log_msg("CUSTOMER SEGMENTATION BY UPLIFT POTENTIAL")
+log_msg("STRATEGY COMPARISON (using src.optimize)")
 log_msg("=" * 70)
 
-# Define segments
-campaign['uplift_segment'] = pd.cut(
-    campaign['cate'], 
-    bins=5, 
-    labels=['Very Low', 'Low', 'Medium', 'High', 'Very High'],
-    duplicates='drop'
+uplift = campaign['cate'].to_numpy()  # 1D
+indices = np.arange(uplift.shape[0])
+
+comparison_df = compare_strategies(
+    uplift=uplift,
+    margin=config.campaign.margin,
+    contact_cost=config.campaign.contact_cost,
+    budget=config.campaign.budget,
+    k_values=[0.1, 0.2, 0.3, 0.5],
+    roi_thresholds=[0.0, 0.5, 1.0],
+    indices=indices
 )
 
-seg_summary = campaign.groupby('uplift_segment', observed=True).agg({
-    'client_id': 'count',
-    'cate': ['mean', 'std'],
-    'target': 'mean',
-    'monetary_capped': 'mean'
-}).round(4)
+log_msg("\nStrategy Comparison Results:")
+log_msg("-" * 70)
+for _, row in comparison_df.sort_values('roi_pct', ascending=False).iterrows():
+    log_msg(f"{row['strategy']:<20} | "
+            f"n={row['n_selected']:>6,.0f} | "
+            f"Cost=${row['cost']:>8,.0f} | "
+            f"Profit=${row['profit']:>8,.0f} | "
+            f"ROI={row['roi_pct']:>6.1f}%")
 
-seg_summary.columns = ['n_customers', 'avg_cate', 'std_cate', 'baseline_conversion', 'avg_monetary']
-seg_summary['expected_uplift_pct'] = seg_summary['avg_cate'] * 100
+comparison_df.to_csv('results/campaign_strategies_comparison.csv', index=False)
+log_msg("\nSaved: results/campaign_strategies_comparison.csv")
 
-log_msg("\nSegment Summary:")
-log_msg(seg_summary.to_string())
-
-# ======================== BUDGET ALLOCATION ========================
-
+# Kıyaslamada en yüksek ROI'yi loglayalım (bilgi amaçlı)
+best_idx = comparison_df['roi_pct'].idxmax()
+best_strategy_row = comparison_df.loc[best_idx]
 log_msg("\n" + "=" * 70)
-log_msg("BUDGET ALLOCATION SCENARIOS")
+log_msg("RECOMMENDED STRATEGY (from comparison, info only)")
+log_msg("=" * 70)
+log_msg(f"{best_strategy_row['strategy']}: "
+        f"n={best_strategy_row['n_selected']:,}, "
+        f"Cost=${best_strategy_row['cost']:,.0f}, "
+        f"Profit=${best_strategy_row['profit']:,.0f}, "
+        f"ROI={best_strategy_row['roi_pct']:.1f}%")
+
+# ---------------------------------------------------------------------
+# GENERATE TARGET LISTS (Optimized with ROI & Budget constraints)
+# ---------------------------------------------------------------------
+log_msg("\n" + "=" * 70)
+log_msg("GENERATING TARGET LISTS (Optimized with Constraints)")
 log_msg("=" * 70)
 
-# Config
-configs = [
-    {'name': 'Conservative', 'budget_pct': 0.10, 'focus': 'Very High'},
-    {'name': 'Balanced', 'budget_pct': 0.25, 'focus': 'High+Very High'},
-    {'name': 'Aggressive', 'budget_pct': 0.50, 'focus': 'High+Very High+Medium'}
-]
+min_roi_constraint = float(getattr(config.campaign, 'min_roi', 0.0))
+budget_constraint = float(getattr(config.campaign, 'budget', float('inf')))
 
-cost_per_contact = 0.5  # USD
-revenue_per_conversion = 50.0  # USD
+constraint_line = f"ROI ≥ {min_roi_constraint*100:.0f}% AND Budget ≤ ${budget_constraint:,.0f}"
+method_label = "src.optimize.optimize_with_constraints"
+log_msg(f"Applying constraints: {constraint_line}")
 
-results_list = []
+final_result = optimize_with_constraints(
+    uplift=uplift,
+    margin=config.campaign.margin,
+    contact_cost=config.campaign.contact_cost,
+    budget=budget_constraint,
+    min_roi=min_roi_constraint,
+    max_customers=None,
+    indices=indices
+)
 
-for config in configs:
-    log_msg(f"\n--- {config['name']} Strategy ({config['budget_pct']*100:.0f}% budget) ---")
-    
-    # Sort by CATE descending
-    sorted_campaign = campaign.sort_values('cate', ascending=False).reset_index(drop=True)
-    
-    # Select top k%
-    n_contact = int(len(sorted_campaign) * config['budget_pct'])
-    selected = sorted_campaign.iloc[:n_contact].copy()
-    
-    # Metrics
-    n_total = len(sorted_campaign)
-    cost = n_contact * cost_per_contact
-    
-    # Expected conversions = baseline + uplift
-    baseline_conv = selected['target'].mean()
-    expected_conv_treated = baseline_conv + selected['cate'].mean()
-    incremental_conv = selected['cate'].sum()
-    
-    revenue = incremental_conv * revenue_per_conversion
-    profit = revenue - cost
-    roi = (profit / cost * 100) if cost > 0 else 0
-    
-    log_msg(f"Customers targeted: {n_contact:,} ({config['budget_pct']*100:.1f}%)")
-    log_msg(f"Campaign cost: ${cost:,.2f}")
-    log_msg(f"Expected incremental conversions: {incremental_conv:.0f}")
-    log_msg(f"Expected incremental revenue: ${revenue:,.2f}")
-    log_msg(f"Net profit: ${profit:,.2f}")
-    log_msg(f"ROI: {roi:.1f}%")
-    log_msg(f"Cost per incremental conversion: ${cost/max(incremental_conv, 1):.2f}")
-    
-    results_list.append({
-        'strategy': config['name'],
-        'budget_pct': config['budget_pct'],
-        'n_contacted': n_contact,
-        'cost': cost,
-        'incremental_conversions': incremental_conv,
-        'revenue': revenue,
-        'profit': profit,
-        'roi_pct': roi,
-        'avg_cate_targeted': selected['cate'].mean(),
-        'avg_monetary': selected['monetary_capped'].mean()
+sel_idx = np.asarray(final_result['selected_indices'], dtype=int).reshape(-1)
+target_list = campaign.iloc[sel_idx].copy()
+log_msg(f"\nSelected {final_result['n_selected']:,} customers matching constraints.")
+
+# Hangi kısıt bağladı?
+max_contacts_budget = int(config.campaign.budget / config.campaign.contact_cost)
+roi_uplift_threshold = (config.campaign.contact_cost * (1 + min_roi_constraint)) / config.campaign.margin
+n_roi_eligible = int((uplift >= roi_uplift_threshold).sum())
+
+binder = []
+if final_result['n_selected'] == max_contacts_budget:
+    binder.append("BUDGET")
+if final_result['n_selected'] == n_roi_eligible:
+    binder.append("ROI")
+binder = " & ".join(binder) if binder else "NONE"
+
+log_msg(f"Constraint binding: {binder} "
+        f"(ROI threshold uplift ≥ {roi_uplift_threshold:.4f}, "
+        f"ROI-eligible={n_roi_eligible:,}, "
+        f"Budget-eligible={max_contacts_budget:,})")
+
+# Emniyet: bütçe trim (normalde gerekmez; yine de dursun)
+max_contacts = int(config.campaign.budget / config.campaign.contact_cost)
+if len(target_list) > max_contacts:
+    target_list = target_list.sort_values('cate', ascending=False).head(max_contacts).copy()
+    log_msg(f"[INFO] Trimmed to budget: kept top {max_contacts:,} by CATE to respect budget.")
+
+# Kampanya metadata
+campaign_id = datetime.now().strftime("CPN%Y%m%d_%H%M%S")
+target_list['campaign_id'] = campaign_id
+target_list['strategy_name'] = "Optimized (ROI & Budget)"
+target_list['optimizer'] = method_label
+target_list['constraint'] = constraint_line
+
+# Skor ve finans kolonları
+target_list['expected_incremental_revenue'] = target_list['cate'] * config.campaign.margin
+target_list['expected_incremental_profit_per_customer'] = (
+    target_list['expected_incremental_revenue'] - config.campaign.contact_cost
+)
+target_list['expected_roi_pct_per_customer'] = (
+    target_list['expected_incremental_profit_per_customer'] / config.campaign.contact_cost
+).replace([np.inf, -np.inf], np.nan)
+
+target_list = target_list.sort_values('cate', ascending=False)
+
+# Profit–Budget frontier (karar desteği)
+profit_per_cust = uplift * config.campaign.margin - config.campaign.contact_cost
+order = np.argsort(profit_per_cust)[::-1]
+cum_uplift = np.cumsum(uplift[order])
+contacts = np.arange(1, len(order) + 1)
+costs = contacts * config.campaign.contact_cost
+revenues = cum_uplift * config.campaign.margin
+profits = revenues - costs
+frontier = pd.DataFrame({
+    'contacts': contacts,
+    'cost': costs,
+    'revenue': revenues,
+    'profit': profits,
+    'roi_pct': np.where(costs > 0, profits / costs * 100, np.nan)
+})
+frontier.to_csv('results/profit_budget_frontier.csv', index=False)
+log_msg("Saved: results/profit_budget_frontier.csv (profit vs. budget frontier)")
+
+# ---------------------------------------------------------------------
+# A/B TEST SPLIT (Stratified with exact global ratio; per-stratum quotas)
+# ---------------------------------------------------------------------
+log_msg("\n" + "=" * 70)
+log_msg("A/B TEST CONFIGURATION")
+log_msg("=" * 70)
+
+seed = getattr(config.model, 'random_state', getattr(config.campaign, 'random_state', 42))
+rng = np.random.RandomState(int(seed))
+control_ratio = float(np.clip(getattr(config.campaign, 'test_split_ratio', 0.2), 0.01, 0.99))
+
+# 1) CATE'yi 10 desile böl
+target_list['cate_decile'] = pd.qcut(
+    target_list['cate'], 10, labels=False, duplicates='drop'
+)
+
+# 2) Tabaka başına Hamilton (largest remainder) ile kontrol kotası
+strata = []
+total_n = len(target_list)
+target_control = int(round(total_n * control_ratio))
+
+for key, grp in target_list.groupby(['rfm_segment', 'cate_decile'], dropna=False):
+    n = len(grp)
+    if n == 0:
+        continue
+    if n == 1:
+        base = 0
+        remainder = 0.0
+        min_ctrl, max_ctrl = 0, 0
+    else:
+        raw = n * control_ratio
+        base = int(np.floor(raw))
+        remainder = float(raw - base)
+        # n>=2 ise her iki grup da en az 1 olsun
+        min_ctrl, max_ctrl = 1, n - 1
+
+    strata.append({
+        'key': key,
+        'index': grp.index.values,   # numpy array
+        'n': n,
+        'base': base,
+        'remainder': remainder,
+        'min_ctrl': min_ctrl,
+        'max_ctrl': max_ctrl,
+        'assigned': None,
     })
 
-results_df = pd.DataFrame(results_list)
+# 3) İlk atama: base'i [min,max] içine kırp
+for s in strata:
+    s['assigned'] = int(np.clip(s['base'], s['min_ctrl'], s['max_ctrl']))
 
-# ======================== SEGMENT-LEVEL TARGETING ========================
+sum_assigned = int(np.sum([s['assigned'] for s in strata]))
+delta = int(target_control - sum_assigned)
 
-log_msg("\n" + "=" * 70)
-log_msg("SEGMENT-LEVEL STRATEGY")
-log_msg("=" * 70)
+# 4) Toplamı tam hedefe eşitle (largest remainder) — kapasiteye saygı
+if delta > 0:
+    candidates = [i for i, s in enumerate(strata) if s['assigned'] < s['max_ctrl']]
+    order = sorted(candidates, key=lambda i: (strata[i]['remainder'], strata[i]['n']), reverse=True)
+    for i in order:
+        if delta == 0:
+            break
+        room = strata[i]['max_ctrl'] - strata[i]['assigned']
+        if room <= 0:
+            continue
+        strata[i]['assigned'] += 1
+        delta -= 1
+elif delta < 0:
+    candidates = [i for i, s in enumerate(strata) if s['assigned'] > s['min_ctrl']]
+    order = sorted(candidates, key=lambda i: (strata[i]['remainder'], strata[i]['n']))  # küçük kalandan başla
+    for i in order:
+        if delta == 0:
+            break
+        room = strata[i]['assigned'] - strata[i]['min_ctrl']
+        if room <= 0:
+            continue
+        strata[i]['assigned'] -= 1
+        delta += 1
 
-# For balanced strategy: target High + Very High segments
-balanced_strategy = campaign[campaign['uplift_segment'].isin(['High', 'Very High'])].copy()
+# 5) Atama: her tabakada "assigned" kadar controlü RANDOM seç
+target_list['ab_group'] = 'treatment'
+for s in strata:
+    n = s['n']
+    if n == 0 or s['assigned'] == 0:
+        continue
+    if n == 1:
+        continue  # tek kişi varsa max_ctrl=0 olduğundan control seçilmez
+    ctrl_size = int(s['assigned'])
+    ctrl_idx = rng.choice(s['index'], size=ctrl_size, replace=False)
+    target_list.loc[ctrl_idx, 'ab_group'] = 'control'
 
-log_msg(f"\nTarget Segments: High + Very High Uplift")
-log_msg(f"Total customers: {len(balanced_strategy):,}")
-log_msg(f"Average CATE: {balanced_strategy['cate'].mean():.4f}")
-log_msg(f"Top RFM segments in target:")
+# 6) Final sayılar ve log
+n_control = int((target_list['ab_group'] == 'control').sum())
+n_treatment = int((target_list['ab_group'] == 'treatment').sum())
 
-top_segments = balanced_strategy.groupby('rfm_segment').size().sort_values(ascending=False).head(10)
-for seg, count in top_segments.items():
-    seg_data = balanced_strategy[balanced_strategy['rfm_segment'] == seg]
-    log_msg(f"  {seg}: {count:,} customers (avg CATE: {seg_data['cate'].mean():+.4f})")
+log_msg(f"\nA/B Test Split:")
+log_msg(f"  Treatment group: {n_treatment:,} customers ({(n_treatment/len(target_list))*100:.1f}%)")
+log_msg(f"  Control group: {n_control:,} customers ({(n_control/len(target_list))*100:.1f}%)")
+assert n_control + n_treatment == len(target_list)
 
-# ======================== A/B TEST PLANNING ========================
+# ---------------------------------------------------------------------
+# POWER CALCULATION
+# ---------------------------------------------------------------------
+baseline = float(np.clip(target_list['p_control'].mean(), 0, 1)) if 'p_control' in target_list.columns else 0.0
+effect = float(target_list['cate'].mean())
+expected_treatment = float(np.clip(baseline + effect, 0, 1))
 
-log_msg("\n" + "=" * 70)
-log_msg("A/B TEST SAMPLE SIZE PLANNING")
-log_msg("=" * 70)
+log_msg(f"\nExpected Effects:")
+log_msg(f"  Baseline (control): {baseline*100:.2f}%")
+log_msg(f"  Treatment effect: {effect*100:+.2f}pp")
+log_msg(f"  Treatment rate: {expected_treatment*100:.2f}%")
 
-from scipy import stats
+alpha = float(getattr(config.campaign, 'alpha', 0.05))
+power_target = float(getattr(config.campaign, 'power', 0.8))
+beta = 1 - power_target
 
-# For balanced strategy
-target_customers = balanced_strategy
-baseline = target_customers['target'].mean()
-effect = target_customers['cate'].mean()
-
-log_msg(f"\nBased on Balanced Strategy (25% budget):")
-log_msg(f"Baseline conversion: {baseline*100:.2f}%")
-log_msg(f"Expected treatment effect: {effect*100:+.2f}%")
-
-# Power calculation
-alpha = 0.05
-beta = 0.20  # 80% power
 z_alpha = stats.norm.ppf(1 - alpha/2)
 z_beta = stats.norm.ppf(1 - beta)
 
-p1 = baseline
-p2 = baseline + effect
-pooled_p = (p1 + p2) / 2
+pooled_p = np.clip((baseline + expected_treatment) / 2, 1e-6, 1 - 1e-6)
 
-n_per_group = ((z_alpha + z_beta)**2 * 2 * pooled_p * (1 - pooled_p)) / (effect**2)
-
-log_msg(f"\nMinimum sample size per group (80% power, 5% significance):")
-log_msg(f"  Per group: {int(n_per_group):,}")
-log_msg(f"  Total: {int(n_per_group * 2):,}")
-log_msg(f"  Available in target segment: {len(target_customers):,}")
-
-if len(target_customers) >= n_per_group * 2:
-    log_msg(f"  Status: SUFFICIENT sample size")
+if abs(effect) < 1e-6:
+    n_per_group_required = float('inf')
 else:
-    log_msg(f"  Status: NEED {int(n_per_group * 2 - len(target_customers)):,} MORE customers")
+    n_per_group_required = ((z_alpha + z_beta) ** 2 * 2 * pooled_p * (1 - pooled_p)) / (effect ** 2)
 
-# ======================== SAVE RESULTS ========================
+log_msg(f"\nSample Size:")
+if np.isinf(n_per_group_required):
+    log_msg("  Required per group: ∞ (effect≈0; test anlamlı değil)")
+else:
+    log_msg(f"  Required per group: {int(np.ceil(n_per_group_required)):,}")
+log_msg(f"  Actual treatment: {n_treatment:,}")
+log_msg(f"  Actual control: {n_control:,}")
+power_sufficient = (not np.isinf(n_per_group_required)) and (n_control >= n_per_group_required)
+log_msg(f"  Status: {'✅ SUFFICIENT POWER' if power_sufficient else '⚠️ UNDERPOWERED'}")
 
+# --------- METADATA KOLONLARINI EKLE (export için) ----------
+try:
+    campaign_id  # var mı?
+except NameError:
+    campaign_id = f"cmp-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+
+strategy_name = "Optimized (ROI & Budget)"
+optimizer_label = globals().get("method_label", "src.optimize.optimize_with_constraints")
+constraint_text = globals().get(
+    "constraint_line",
+    f"min_ROI ≥ {float(getattr(config.campaign,'min_roi',0.0))*100:.0f}% AND "
+    f"Budget ≤ ${float(getattr(config.campaign,'budget',0.0)):,.0f}"
+)
+
+target_list['campaign_id']  = campaign_id
+target_list['strategy_name'] = strategy_name
+target_list['optimizer']     = optimizer_label
+target_list['constraint']    = constraint_text
+
+# ================= QA CHECKS ================
+# 1) Tekil müşteri, tek grup
+assert target_list['client_id'].is_unique, "client_id tekrar ediyor!"
+vc = target_list['ab_group'].value_counts()
+assert set(vc.index) <= {"control","treatment"}, "ab_group beklenmeyen değer içeriyor!"
+
+# 2) Control oranı tolerans içinde (±0.2pp)
+ctrl_pct = (target_list['ab_group']=="control").mean()*100
+assert abs(ctrl_pct - control_ratio*100) <= 0.2, f"Control oranı sapması: {ctrl_pct:.2f}%"
+
+# 3) CATE ve finansal kolonlarda NaN yok
+for col in ["cate","expected_incremental_revenue","expected_incremental_profit_per_customer"]:
+    assert target_list[col].notna().all(), f"{col} içinde NaN var!"
+
+# 4) A/B tabakaları dengeli: n>=2 ise her iki grup da var (>=1)
+for k, grp in target_list.groupby(["rfm_segment","cate_decile"], dropna=False):
+    if len(grp) <= 1:
+        continue
+    gvc = grp['ab_group'].value_counts()
+    assert ("control" in gvc) and ("treatment" in gvc), f"Tabaka {k} tek gruba düşmüş (n={len(grp)})!"
+
+# ---------------------------------------------------------------------
+# SAVE OUTPUTS
+# ---------------------------------------------------------------------
 log_msg("\n" + "=" * 70)
-log_msg("SAVING RESULTS")
+log_msg("SAVING OUTPUTS")
 log_msg("=" * 70)
 
-# 1. Strategy comparison
-results_df.to_csv('results/campaign_strategies.csv', index=False)
-log_msg("Saved: results/campaign_strategies.csv")
+# 1) Tüm hedef liste (A/B dahil)
+target_list.to_csv('results/target_customers_with_ab.csv', index=False)
+log_msg(f"Saved: results/target_customers_with_ab.csv ({len(target_list):,} rows)")
 
-# 2. Segment summary
-seg_summary.to_csv('results/segment_summary.csv')
-log_msg("Saved: results/segment_summary.csv")
+# 2) Treatment list (uygulama)
+treatment_list = target_list[target_list['ab_group'] == 'treatment'][[
+    'client_id', 'cate', 'expected_incremental_revenue',
+    'expected_incremental_profit_per_customer', 'expected_roi_pct_per_customer',
+    'rfm_segment', 'monetary_capped', 'aov', 'frequency', 'recency',
+    'campaign_id', 'strategy_name', 'optimizer', 'constraint'
+]]
+treatment_list.to_csv('exports/campaign_treatment_list.csv', index=False)
+log_msg(f"Saved: exports/campaign_treatment_list.csv ({len(treatment_list):,} rows)")
 
-# 3. Target customers (for balanced strategy)
-target_list = balanced_strategy[[
-    'client_id', 'rfm_segment', 'monetary_capped', 'cate', 'target',
-    'p_control', 'p_treatment', 'uplift_segment'
-]].sort_values('cate', ascending=False)
+# 3) Control list (holdout)
+control_list = target_list[target_list['ab_group'] == 'control'][[
+    'client_id', 'cate', 'expected_incremental_revenue',
+    'expected_incremental_profit_per_customer',
+    'rfm_segment', 'monetary_capped',
+    'campaign_id', 'strategy_name', 'optimizer', 'constraint'
+]]
+control_list.to_csv('exports/campaign_control_list.csv', index=False)
+log_msg(f"Saved: exports/campaign_control_list.csv ({len(control_list):,} rows)")
 
-target_list.to_csv('results/target_customers_list.csv', index=False)
-log_msg(f"Saved: results/target_customers_list.csv ({len(target_list):,} customers)")
+# 4) Campaign summary (pickle) — final_result metriklerinden
+summary_data = {
+    'strategy': "Optimized (ROI & Budget)",
+    'n_total': int(len(target_list)),
+    'n_treatment': int(n_treatment),
+    'n_control': int(n_control),
+    'total_cost': float(final_result['total_cost']),
+    'expected_revenue': float(final_result['expected_revenue']),
+    'expected_profit': float(final_result['expected_profit']),
+    'roi_pct': float(final_result['roi_pct']),
+    'avg_cate': float(target_list['cate'].mean()),
+    'avg_clv': float(target_list['monetary_capped'].mean()),
+    'baseline_conversion': float(baseline),
+    'expected_uplift': float(effect),
+    'power_sufficient': bool(power_sufficient),
+    'control_ratio': float(control_ratio),
+    'optimizer': method_label,
+    'constraint': constraint_line,
+    'campaign_id': campaign_id,
+}
+with open('results/campaign_summary.pkl', 'wb') as f:
+    pickle.dump(summary_data, f)
+log_msg("Saved: results/campaign_summary.pkl")
 
-# ======================== EXECUTIVE SUMMARY ========================
-
+# ---------------------------------------------------------------------
+# EXECUTIVE SUMMARY — final_result metrikleriyle
+# ---------------------------------------------------------------------
 log_msg("\n" + "=" * 70)
 log_msg("EXECUTIVE SUMMARY")
 log_msg("=" * 70)
 
-log_msg("\nRECOMMENDATION: Balanced Strategy (25% budget)")
-log_msg(f"- Target {len(balanced_strategy):,} high-uplift customers")
-log_msg(f"- Expected ROI: {results_df[results_df['strategy']=='Balanced']['roi_pct'].values[0]:.1f}%")
-log_msg(f"- Net Profit: ${results_df[results_df['strategy']=='Balanced']['profit'].values[0]:,.0f}")
-log_msg(f"- A/B test sample: {int(n_per_group*2):,} (80% power)")
+summary_text = f"""
+CAMPAIGN PLAN
+{'=' * 70}
 
-log_msg("\nKEY METRICS:")
-log_msg(f"- Model Qini AUC: 0.0727 (Good ranking ability)")
-log_msg(f"- Population ATE: +3.32% (statistically significant)")
-log_msg(f"- Target segment CATE: {balanced_strategy['cate'].mean()*100:+.2f}%")
-log_msg(f"- Treatment balance (SMD): 0.0147 (Excellent)")
+RECOMMENDED STRATEGY: Optimized (ROI & Budget)
 
-log_msg("\nNEXT STEPS:")
-log_msg("1. Get stakeholder approval on Balanced Strategy")
-log_msg("2. Prepare campaign targeting list (target_customers_list.csv)")
-log_msg("3. Set up A/B test infrastructure")
-log_msg("4. Launch campaign with 80% of target customers")
-log_msg("5. Reserve 20% as control group for causal validation")
+TARGET AUDIENCE:
+  • Total Size: {len(target_list):,} customers
+  • Treatment Group: {n_treatment:,} customers ({(n_treatment/len(target_list))*100:.0f}%)
+  • Control Group: {n_control:,} customers ({(n_control/len(target_list))*100:.0f}%)
+  • Average CATE: {target_list['cate'].mean():+.2%}
+  • Average CLV: ${target_list['monetary_capped'].mean():,.0f}
 
+FINANCIAL PROJECTIONS:
+  • Campaign Cost: ${final_result['total_cost']:,.0f}
+  • Expected Incremental Revenue: ${final_result['expected_revenue']:,.0f}
+  • Net Profit: ${final_result['expected_profit']:,.0f}
+  • ROI: {final_result['roi_pct']:.1f}%
+  • Cost per Contact: ${config.campaign.contact_cost:.2f}
+
+STATISTICAL DESIGN:
+  • Baseline Conversion: {baseline*100:.2f}%
+  • Expected Uplift: {effect*100:+.2f}pp
+  • Statistical Power: {power_target*100:.0f}%
+  • Significance Level: {alpha*100:.0f}%
+  • Power Status: {'✅ Sufficient' if power_sufficient else '⚠️ Underpowered'}
+
+OPTIMIZATION METHOD:
+  • Algorithm: {method_label}
+  • Constraint: {constraint_line}
+  • Selection: {final_result['n_selected']:,} customers selected
+  • Average Predicted Uplift: {final_result['avg_uplift']:+.4f}
+
+KEY DELIVERABLES:
+  ✅ exports/campaign_treatment_list.csv - Send campaign to these customers
+  ✅ exports/campaign_control_list.csv - Holdout group (DO NOT CONTACT)
+  ✅ results/target_customers_with_ab.csv - Full list with assignments
+  ✅ results/campaign_strategies_comparison.csv - Strategy comparison
+  ✅ results/profit_budget_frontier.csv - Profit vs. Budget frontier
+
+NEXT STEPS:
+  1. Review treatment list (exports/campaign_treatment_list.csv)
+  2. Set up campaign in marketing platform
+  3. Ensure control group is properly held out
+  4. Monitor campaign performance in real-time
+  5. Post-campaign: Compare actual vs predicted uplift
+"""
+log_msg(summary_text)
+
+# ---------------------------------------------------------------------
+# SEGMENTATION INSIGHTS
+# ---------------------------------------------------------------------
 log_msg("\n" + "=" * 70)
-log_msg("COMPLETE!")
+log_msg("SEGMENTATION INSIGHTS")
 log_msg("=" * 70)
 
-print("\n✅ All results saved to results/ folder")
-print("📊 Check: campaign_strategies.csv, segment_summary.csv, target_customers_list.csv")
+segment_col = 'rfm_tier' if 'rfm_tier' in target_list.columns else 'rfm_segment'
+rfm_analysis = (target_list
+    .groupby(segment_col)
+    .agg(
+        n_customers=('client_id', 'count'),
+        avg_cate=('cate', 'mean'),
+        avg_revenue=('expected_incremental_revenue', 'mean'),
+        avg_profit=('expected_incremental_profit_per_customer', 'mean'),
+        avg_roi=('expected_roi_pct_per_customer', 'mean'),
+    )
+    .round(4)
+    .sort_values('avg_profit', ascending=False)
+)
+
+log_msg("\nTop RFM Segments:")
+for segment, row in rfm_analysis.head(10).iterrows():
+    log_msg(f"  {segment}: n={int(row['n_customers']):,}, "
+            f"CATE={row['avg_cate']:+.4f}, "
+            f"Profit/px=${row['avg_profit']:+.2f}, "
+            f"ROI/px={row['avg_roi']*100:+.1f}%")
+
+rfm_analysis.to_csv('results/rfm_segment_analysis.csv')
+log_msg("\nSaved: results/rfm_segment_analysis.csv")
+
+log_msg("\n" + "=" * 70)
+log_msg("CAMPAIGN PLANNING COMPLETE!")
+log_msg("=" * 70)
+
+log_msg(f"""
+✅ SUCCESS!
+
+Key Files Generated:
+  • exports/campaign_treatment_list.csv ({len(treatment_list):,} customers)
+  • exports/campaign_control_list.csv ({len(control_list):,} customers)
+  • results/campaign_summary.pkl (metrics)
+  • results/campaign_strategies_comparison.csv (all strategies)
+  • results/profit_budget_frontier.csv (frontier)
+
+Expected Results:
+  • Profit: ${final_result['expected_profit']:,.0f}
+  • ROI: {final_result['roi_pct']:.1f}%
+  
+Ready to launch! 🚀
+""")
+
+# ---------------------------------------------------------------------
+# ENTRY POINT
+# ---------------------------------------------------------------------
+def main():
+    """Main function for script execution"""
+    return {
+        'target_list': target_list,
+        'treatment_list': treatment_list,
+        'control_list': control_list,
+        'comparison': comparison_df,
+        'summary': summary_data,
+        'optimization_result': final_result
+    }
+
+if __name__ == '__main__':
+    _ = main()
