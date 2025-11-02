@@ -205,3 +205,99 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+# ====================
+# Python
+# ====================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# ====================
+# Jupyter Notebook
+# ====================
+.ipynb_checkpoints
+*/.ipynb_checkpoints/*
+
+# ====================
+# Data & Results
+# ====================
+*.csv
+*.pkl
+*.parquet
+*.h5
+*.hdf5
+
+# Data folders (keep .gitkeep)
+data/*
+!data/.gitkeep
+!data/README.md
+
+# Results folders (keep .gitkeep)
+results/*
+!results/.gitkeep
+!results/*.py
+exports/*
+!exports/.gitkeep
+models/*.pkl
+!models/.gitkeep
+plots/*
+!plots/.gitkeep
+logs/*
+!logs/.gitkeep
+
+# ====================
+# IDE
+# ====================
+.vscode/
+.idea/
+*.swp
+*.swo
+*.sublime-workspace
+*.sublime-project
+
+# ====================
+# OS
+# ====================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# ====================
+# Temporary files
+# ====================
+*.log
+*.tmp
+*.temp
+*~
+
+# ====================
+# Virtual environments
+# ====================
+venv/
+env/
+ENV/
+.venv
